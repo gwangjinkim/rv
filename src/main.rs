@@ -262,11 +262,12 @@ pub enum Command {
     #[clap(trailing_var_arg = true)]
     Run {
         /// Do not sync the project library before running the command
-        /// This needs to be the first flag if set
+        /// This must be the last rv option; following values are passed to Rscript
         #[clap(long)]
         no_sync: bool,
         /// Load the project or user .Rprofile for this invocation. This may change the
         /// library paths and other state selected by rv, reducing reproducibility.
+        /// This must appear before --no-sync and any Rscript arguments.
         #[clap(long)]
         with_profile: bool,
         /// Forces the usage of the R at the given path. If it doesn't match the config's R
