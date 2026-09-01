@@ -1,4 +1,5 @@
 use assert_cmd::cargo;
+use std::collections::HashMap;
 use std::fs;
 use tempfile::TempDir;
 
@@ -29,6 +30,16 @@ fn rv_cmd(cache: &TempDir, config: &std::path::Path) -> assert_cmd::Command {
     command.env("RV_CACHE_DIR", cache.path());
     command.args(["--config-file", config.to_str().unwrap()]);
     command
+}
+
+fn probe_values(output: &str) -> HashMap<String, String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            line.split_once('\t')
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 #[test]
@@ -63,6 +74,28 @@ fn explicit_config_disables_environment_override() {
     let output = command.output().unwrap();
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "sandbox:");
+}
+
+#[test]
+fn explicit_config_enables_sandbox_when_environment_is_false() {
+    let (_project, cache, config) = create_project(Some(true));
+    let mut command = rv_cmd(&cache, &config);
+    command.env("RV_SANDBOX_ENABLE", "0");
+    command.args(["info", "--sandbox"]);
+
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sandbox = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .strip_prefix("sandbox: ")
+        .unwrap()
+        .to_string();
+    assert!(!sandbox.is_empty());
+    assert!(std::path::Path::new(&sandbox).is_dir());
 }
 
 #[test]
@@ -101,6 +134,70 @@ fn rv_run_repoints_library_and_uses_sandbox_in_library_paths() {
 }
 
 #[test]
+fn rv_run_ignores_host_startup_files_and_library_environment() {
+    let (project, cache, config) = create_project(Some(true));
+    let hostile_library = project.path().join("host-library");
+    fs::create_dir(&hostile_library).unwrap();
+    let hostile_environ = project.path().join("host.Renviron");
+    fs::write(&hostile_environ, "RV_HOST_ENVIRON_LEAK=environ-loaded\n").unwrap();
+    let hostile_profile = project.path().join("host.Rprofile");
+    fs::write(
+        &hostile_profile,
+        "Sys.setenv(RV_HOST_PROFILE_LEAK = 'profile-loaded')\n",
+    )
+    .unwrap();
+
+    let mut command = rv_cmd(&cache, &config);
+    command.current_dir(project.path());
+    command
+        .env("R_ENVIRON", &hostile_environ)
+        .env("R_ENVIRON_USER", &hostile_environ)
+        .env("R_PROFILE", &hostile_profile)
+        .env("R_PROFILE_USER", &hostile_profile)
+        .env("R_LIBS", &hostile_library)
+        .env("R_LIBS_SITE", &hostile_library)
+        .env("R_LIBS_USER", &hostile_library)
+        .args([
+            "run",
+            "--no-sync",
+            "-e",
+            r#"cat(
+                paste("library", .Library, sep = "\t"),
+                paste("site", paste(.Library.site, collapse = .Platform$path.sep), sep = "\t"),
+                paste("paths", paste(.libPaths(), collapse = .Platform$path.sep), sep = "\t"),
+                paste("r_libs", Sys.getenv("R_LIBS"), sep = "\t"),
+                paste("environ_leak", Sys.getenv("RV_HOST_ENVIRON_LEAK"), sep = "\t"),
+                paste("profile_leak", Sys.getenv("RV_HOST_PROFILE_LEAK"), sep = "\t"),
+                sep = "\n"
+            )"#,
+        ]);
+
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let observed = probe_values(&stdout);
+    assert!(observed["library"].contains("sandboxes"), "{stdout}");
+    assert_eq!(observed["site"], "", "{stdout}");
+    assert!(
+        observed["paths"].contains("rv/library") || observed["paths"].contains("rv\\library"),
+        "{stdout}"
+    );
+    assert!(observed["paths"].contains("sandboxes"), "{stdout}");
+    assert!(
+        !observed["paths"].contains(&hostile_library.to_string_lossy().to_string()),
+        "host library leaked into .libPaths(): {stdout}"
+    );
+    assert_eq!(observed["r_libs"], "", "{stdout}");
+    assert_eq!(observed["environ_leak"], "", "{stdout}");
+    assert_eq!(observed["profile_leak"], "", "{stdout}");
+}
+
+#[test]
 fn sync_isolates_r_build_and_install_subprocesses() {
     let project = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
@@ -121,10 +218,23 @@ Encoding: UTF-8
     fs::write(probe.join("NAMESPACE"), "export(probe)\n").unwrap();
     fs::write(
         probe.join("R").join("probe.R"),
-        r#"writeLines(
-    c(.Library, Sys.getenv("R_LIBS_SITE")),
-    Sys.getenv("RV_TEST_OUTPUT")
-)
+        r#"local({
+    values <- c(
+        library = .Library,
+        site = paste(.Library.site, collapse = .Platform$path.sep),
+        paths = paste(.libPaths(), collapse = .Platform$path.sep),
+        r_libs = Sys.getenv("R_LIBS"),
+        r_libs_site = Sys.getenv("R_LIBS_SITE"),
+        r_libs_user = Sys.getenv("R_LIBS_USER"),
+        r_environ = Sys.getenv("R_ENVIRON"),
+        r_environ_user = Sys.getenv("R_ENVIRON_USER"),
+        r_profile = Sys.getenv("R_PROFILE"),
+        r_profile_user = Sys.getenv("R_PROFILE_USER"),
+        environ_leak = Sys.getenv("RV_HOST_ENVIRON_LEAK"),
+        profile_leak = Sys.getenv("RV_HOST_PROFILE_LEAK")
+    )
+    writeLines(paste(names(values), values, sep = "\t"), Sys.getenv("RV_TEST_OUTPUT"))
+})
 probe <- function() TRUE
 "#,
     )
@@ -132,6 +242,19 @@ probe <- function() TRUE
 
     let observed = project.path().join("observed-library-paths.txt");
     let observed_for_toml = observed.to_string_lossy().replace('\\', "/");
+    let hostile_library = project.path().join("host-library");
+    fs::create_dir(&hostile_library).unwrap();
+    let hostile_library_for_toml = hostile_library.to_string_lossy().replace('\\', "/");
+    let hostile_environ = project.path().join("host.Renviron");
+    fs::write(&hostile_environ, "RV_HOST_ENVIRON_LEAK=environ-loaded\n").unwrap();
+    let hostile_environ_for_toml = hostile_environ.to_string_lossy().replace('\\', "/");
+    let hostile_profile = project.path().join("host.Rprofile");
+    fs::write(
+        &hostile_profile,
+        "Sys.setenv(RV_HOST_PROFILE_LEAK = 'profile-loaded')\n",
+    )
+    .unwrap();
+    let hostile_profile_for_toml = hostile_profile.to_string_lossy().replace('\\', "/");
     let config = project.path().join("rproject.toml");
     fs::write(
         &config,
@@ -144,7 +267,17 @@ repositories = []
 dependencies = [{{ name = "sandboxprobe", path = "probe" }}]
 
 [project.packages_env_vars]
-sandboxprobe = {{ RV_TEST_OUTPUT = "{observed_for_toml}" }}
+sandboxprobe = {{
+    RV_TEST_OUTPUT = "{observed_for_toml}",
+    RV_SANDBOX_LIBRARY = "{hostile_library_for_toml}",
+    R_LIBS = "{hostile_library_for_toml}",
+    R_LIBS_SITE = "{hostile_library_for_toml}",
+    R_LIBS_USER = "{hostile_library_for_toml}",
+    R_ENVIRON = "{hostile_environ_for_toml}",
+    R_ENVIRON_USER = "{hostile_environ_for_toml}",
+    R_PROFILE = "{hostile_profile_for_toml}",
+    R_PROFILE_USER = "{hostile_profile_for_toml}"
+}}
 "#
         ),
     )
@@ -162,18 +295,51 @@ sandboxprobe = {{ RV_TEST_OUTPUT = "{observed_for_toml}" }}
     );
 
     let observed = fs::read_to_string(observed).unwrap();
-    let lines = observed.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 2, "unexpected paths: {observed}");
+    let values = probe_values(&observed);
     assert!(
-        lines[0].contains("sandboxes"),
+        values["library"].contains("sandboxes"),
         "install-time .Library was not sandboxed: {observed}"
     );
+    assert_eq!(values["site"], "", "unexpected .Library.site: {observed}");
     assert!(
-        lines[1].contains("rv/library") || lines[1].contains("rv\\library"),
+        values["paths"].contains("rv/library") || values["paths"].contains("rv\\library"),
         "project library missing during install: {observed}"
     );
     assert!(
-        lines[1].contains("sandboxes"),
-        "sandbox missing from install-time R_LIBS_SITE: {observed}"
+        values["paths"].contains("sandboxes"),
+        "sandbox missing from install-time .libPaths(): {observed}"
     );
+    assert!(
+        !values["paths"].contains(&hostile_library.to_string_lossy().to_string()),
+        "package environment leaked a host library into .libPaths(): {observed}"
+    );
+    for variable in ["r_libs", "r_libs_site", "r_libs_user"] {
+        assert!(
+            values[variable].contains("rv/library") || values[variable].contains("rv\\library"),
+            "project library missing from {variable}: {observed}"
+        );
+        assert!(
+            values[variable].contains("sandboxes"),
+            "sandbox missing from {variable}: {observed}"
+        );
+        assert!(
+            !values[variable].contains(&hostile_library.to_string_lossy().to_string()),
+            "package environment overrode {variable}: {observed}"
+        );
+    }
+    assert!(values["r_profile"].ends_with(".rv-profile.R"), "{observed}");
+    assert!(
+        values["r_profile_user"].ends_with(".rv-empty-startup"),
+        "{observed}"
+    );
+    assert!(
+        values["r_environ"].ends_with(".rv-empty-startup"),
+        "{observed}"
+    );
+    assert!(
+        values["r_environ_user"].ends_with(".rv-empty-startup"),
+        "{observed}"
+    );
+    assert_eq!(values["environ_leak"], "", "{observed}");
+    assert_eq!(values["profile_leak"], "", "{observed}");
 }

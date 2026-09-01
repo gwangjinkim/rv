@@ -49,8 +49,11 @@ Additional example projects with more configurations can be found in the [exampl
 
 R always appends its system library (`.Library`) to `.libPaths()`. If that
 library contains user-installed packages, they can leak into an otherwise
-reproducible rv project. Sandboxing is opt-in and exposes only R's base and
-recommended packages from the system library:
+reproducible rv project. Setting only `R_LIBS`, `R_LIBS_SITE`, or `R_LIBS_USER`
+does not solve this: none of those variables replaces `.Library`.
+
+Sandboxing is opt-in and exposes only R's base and recommended packages from
+the selected R installation:
 
 ```toml
 [project]
@@ -58,10 +61,19 @@ sandbox = true
 ```
 
 The configuration value takes precedence over the `RV_SANDBOX_ENABLE`
-environment variable. When enabled, the same sandbox is used by interactive R
-activation, `rv run`, and the R subprocesses used to build and install packages.
-Sandboxes are cached by R installation, platform, and package versions so they
-can be safely reused across projects.
+environment variable, including an explicit `sandbox = false`. When enabled,
+rv creates a content-addressed system library and uses a controlled R startup
+profile to repoint `.Library` and clear `.Library.site`. It also redirects the
+site and user startup files so machine configuration cannot add host libraries
+back into the process.
+
+The same isolation is applied during activation, `rv run`, package bootstrap,
+build, and installation. This matters because package R code can execute during
+`R CMD INSTALL`; resolving dependencies reproducibly before installation is not
+enough if that subprocess can still see packages installed on the host.
+Sandboxes are cached by R installation, platform, and base/recommended package
+versions, validated before reuse, and rebuilt if a local cache entry is
+incomplete.
 
 ## Installation
 
