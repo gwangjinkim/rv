@@ -265,11 +265,11 @@ pub enum Command {
         /// This must be the last rv option; following values are passed to Rscript
         #[clap(long)]
         no_sync: bool,
-        /// Load the project or user .Rprofile for this invocation. This may change the
-        /// library paths and other state selected by rv, reducing reproducibility.
+        /// Ignore the project or user .Rprofile for this invocation. This avoids startup
+        /// code changing the library paths and other state selected by rv.
         /// This must appear before --no-sync and any Rscript arguments.
         #[clap(long)]
-        with_profile: bool,
+        isolated: bool,
         /// Forces the usage of the R at the given path. If it doesn't match the config's R
         /// version, pass `--r-version` as well to confirm; the lockfile is then neither used
         /// nor updated.
@@ -1326,7 +1326,7 @@ fn try_main() -> Result<()> {
 
         Command::Run {
             no_sync,
-            with_profile,
+            isolated,
             r_bin,
             r_version,
             args,
@@ -1365,7 +1365,7 @@ fn try_main() -> Result<()> {
                 None
             };
             if sandbox.is_some()
-                && !with_profile
+                && isolated
                 && !output_format.is_json()
                 && user_r_profile_is_configured()
             {
@@ -1373,7 +1373,7 @@ fn try_main() -> Result<()> {
                 let mut stderr = std::io::stderr().lock();
                 writeln!(
                     stderr,
-                    "warning: ignoring the project or user .Rprofile for reproducibility: R startup code can change library paths, environment variables, and other process state selected by rv; pass `--with-profile` to load it for this invocation"
+                    "warning: `--isolated` is ignoring the project or user .Rprofile for reproducibility because R startup code can change library paths, environment variables, and other process state selected by rv"
                 )?;
                 stderr.flush()?;
             }
@@ -1381,7 +1381,7 @@ fn try_main() -> Result<()> {
                 &context.r_cmd.bin_path,
                 context.library_path(),
                 sandbox.as_ref(),
-                with_profile,
+                !isolated,
                 &args,
             )?;
             std::process::exit(code);

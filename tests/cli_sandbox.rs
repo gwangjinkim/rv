@@ -134,7 +134,7 @@ fn rv_run_repoints_library_and_uses_sandbox_in_library_paths() {
 }
 
 #[test]
-fn rv_run_ignores_host_startup_files_and_library_environment() {
+fn rv_run_isolated_ignores_host_startup_files_and_library_environment() {
     let (project, cache, config) = create_project(Some(true));
     let hostile_library = project.path().join("host-library");
     fs::create_dir(&hostile_library).unwrap();
@@ -159,6 +159,7 @@ fn rv_run_ignores_host_startup_files_and_library_environment() {
         .env("R_LIBS_USER", &hostile_library)
         .args([
             "run",
+            "--isolated",
             "--no-sync",
             "-e",
             r#"cat(
@@ -200,11 +201,11 @@ fn rv_run_ignores_host_startup_files_and_library_environment() {
         stderr.contains("ignoring the project or user .Rprofile"),
         "{stderr}"
     );
-    assert!(stderr.contains("--with-profile"), "{stderr}");
+    assert!(stderr.contains("--isolated"), "{stderr}");
 }
 
 #[test]
-fn rv_run_can_explicitly_load_user_profile() {
+fn rv_run_loads_user_profile_by_default() {
     let (project, cache, config) = create_project(Some(true));
     let profile = project.path().join("host.Rprofile");
     fs::write(
@@ -219,7 +220,6 @@ fn rv_run_can_explicitly_load_user_profile() {
         .env("R_PROFILE_USER", &profile)
         .args([
             "run",
-            "--with-profile",
             "--no-sync",
             "-e",
             r#"cat(

@@ -75,15 +75,14 @@ Sandboxes are cached by R installation, platform, and base/recommended package
 versions, validated before reuse, and rebuilt if a local cache entry is
 incomplete.
 
-With sandboxing enabled, `rv run` ignores the project and user `.Rprofile` by
-default. An R profile is arbitrary startup code: it can change `.libPaths()`,
-repositories, environment variables, options, the working directory, or load
-packages before the requested script starts. Those machine- or user-specific
-changes would mean that the lockfile and rv configuration no longer determine
-the execution environment. `rv run` warns about this policy; use
-`rv run --with-profile ...` to load the normal project or user `.Rprofile` for
-one invocation. Package bootstrap, build, and installation remain isolated even
-when that flag is used.
+This compatibility-policy variant loads the normal project or user `.Rprofile`
+when running `rv run`. An R profile is arbitrary startup code: it can change
+`.libPaths()`, repositories, environment variables, options, the working
+directory, or load packages before the requested script starts. Those machine-
+or user-specific changes can mean that the lockfile and rv configuration no
+longer determine the execution environment. Use `rv run --isolated ...` to
+ignore `.Rprofile` for one reproducible invocation. Package bootstrap, build,
+and installation remain isolated regardless of this `rv run` policy.
 
 ## Installation
 
