@@ -102,7 +102,7 @@ impl RInstall {
 
     fn configure_sandbox_startup(&self, command: &mut Command) {
         if let Some(sandbox) = &self.sandbox {
-            sandbox.configure_r_startup(command);
+            sandbox.configure_r_startup(command, false);
         }
     }
 }

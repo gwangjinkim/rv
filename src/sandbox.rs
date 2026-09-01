@@ -12,6 +12,7 @@ use crate::sync::LinkMode;
 const SANDBOX_FORMAT_VERSION: &str = "2";
 const SANDBOX_PROFILE_FILENAME: &str = ".rv-profile.R";
 const SANDBOX_EMPTY_STARTUP_FILENAME: &str = ".rv-empty-startup";
+const R_TRANSLATIONS_PACKAGE: &str = "translations";
 pub(crate) const SANDBOX_LIBRARY_ENV_VAR_NAME: &str = "RV_SANDBOX_LIBRARY";
 
 /// R startup code used by rv-managed subprocesses. R's `.Library` cannot be
@@ -75,14 +76,16 @@ impl Sandbox {
 
     /// Isolate an R process from machine-level startup files and repoint its
     /// base system library to the rv sandbox.
-    pub(crate) fn configure_r_startup(&self, command: &mut Command) {
+    pub(crate) fn configure_r_startup(&self, command: &mut Command, use_user_profile: bool) {
         let empty = self.empty_startup_path();
         command
             .env(SANDBOX_LIBRARY_ENV_VAR_NAME, &self.path)
             .env("R_ENVIRON", &empty)
             .env("R_ENVIRON_USER", &empty)
-            .env("R_PROFILE", self.profile_path())
-            .env("R_PROFILE_USER", &empty);
+            .env("R_PROFILE", self.profile_path());
+        if !use_user_profile {
+            command.env("R_PROFILE_USER", &empty);
+        }
     }
 }
 
@@ -193,7 +196,9 @@ pub fn get_packages_to_copy(library: &Path) -> Result<SandboxPackages, SandboxEr
             continue;
         }
         let name = entry.file_name().as_os_str().to_string_lossy().to_string();
-        if !BASE_PACKAGES.contains(&name.as_str()) && !RECOMMENDED_PACKAGES.contains(&name.as_str())
+        if !BASE_PACKAGES.contains(&name.as_str())
+            && !RECOMMENDED_PACKAGES.contains(&name.as_str())
+            && name != R_TRANSLATIONS_PACKAGE
         {
             continue;
         }
@@ -281,6 +286,7 @@ mod tests {
         let library = tempfile::tempdir().unwrap();
         add_package(library.path(), "base", "4.5.0");
         add_package(library.path(), "MASS", "7.3-65");
+        add_package(library.path(), R_TRANSLATIONS_PACKAGE, "4.5.0");
         add_package(library.path(), "pollutingPackage", "1.0.0");
 
         let packages = get_packages_to_copy(library.path()).unwrap();
@@ -289,6 +295,13 @@ mod tests {
 
         assert!(output.path().join("base").join("DESCRIPTION").is_file());
         assert!(output.path().join("MASS").join("DESCRIPTION").is_file());
+        assert!(
+            output
+                .path()
+                .join(R_TRANSLATIONS_PACKAGE)
+                .join("DESCRIPTION")
+                .is_file()
+        );
         assert!(!output.path().join("pollutingPackage").exists());
         assert!(output.path().join(SANDBOX_PROFILE_FILENAME).is_file());
         assert!(output.path().join(SANDBOX_EMPTY_STARTUP_FILENAME).is_file());
@@ -353,7 +366,7 @@ mod tests {
             .env("R_DEFAULT_PACKAGES", "NULL")
             .env("R_ENABLE_JIT", "0")
             .env("R_LIBS_SITE", output.path());
-        sandbox.configure_r_startup(&mut command);
+        sandbox.configure_r_startup(&mut command, false);
 
         let result = command.output().unwrap();
         assert!(

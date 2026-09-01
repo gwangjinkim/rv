@@ -19,6 +19,22 @@ pub fn run_with_sandbox(
     sandbox: Option<&Sandbox>,
     args: &[String],
 ) -> Result<i32, RunError> {
+    run_with_sandbox_options(r_bin_path, library_path, sandbox, false, args)
+}
+
+/// Run `Rscript` with an optional isolated system library and startup policy.
+///
+/// When `use_user_profile` is false, the project or user `.Rprofile` is ignored
+/// so arbitrary startup code cannot change the environment selected by rv. When
+/// true, R applies its normal user-profile lookup after rv's controlled site
+/// profile establishes the sandbox.
+pub fn run_with_sandbox_options(
+    r_bin_path: &Path,
+    library_path: &Path,
+    sandbox: Option<&Sandbox>,
+    use_user_profile: bool,
+    args: &[String],
+) -> Result<i32, RunError> {
     let r_home = crate::r_cmd::get_r_home(r_bin_path).map_err(|source| RunError::RHome {
         path: r_bin_path.to_path_buf(),
         source,
@@ -46,7 +62,7 @@ pub fn run_with_sandbox(
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
     if let Some(sandbox) = sandbox {
-        sandbox.configure_r_startup(&mut cmd);
+        sandbox.configure_r_startup(&mut cmd, use_user_profile);
     }
 
     let status = cmd.status().map_err(|source| RunError::Spawn {

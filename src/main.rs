@@ -265,6 +265,10 @@ pub enum Command {
         /// This needs to be the first flag if set
         #[clap(long)]
         no_sync: bool,
+        /// Load the project or user .Rprofile for this invocation. This may change the
+        /// library paths and other state selected by rv, reducing reproducibility.
+        #[clap(long)]
+        with_profile: bool,
         /// Forces the usage of the R at the given path. If it doesn't match the config's R
         /// version, pass `--r-version` as well to confirm; the lockfile is then neither used
         /// nor updated.
@@ -477,6 +481,18 @@ fn make_context(
         }
     }
     Ok(context)
+}
+
+fn user_r_profile_is_configured() -> bool {
+    if std::env::var_os("R_PROFILE_USER").is_some_and(|path| !path.is_empty()) {
+        return true;
+    }
+    if Path::new(".Rprofile").is_file() {
+        return true;
+    }
+    etcetera::home_dir()
+        .map(|home| home.join(".Rprofile").is_file())
+        .unwrap_or(false)
 }
 
 fn try_main() -> Result<()> {
@@ -1309,6 +1325,7 @@ fn try_main() -> Result<()> {
 
         Command::Run {
             no_sync,
+            with_profile,
             r_bin,
             r_version,
             args,
@@ -1346,10 +1363,24 @@ fn try_main() -> Result<()> {
             } else {
                 None
             };
-            let code = rv::run_with_sandbox(
+            if sandbox.is_some()
+                && !with_profile
+                && !output_format.is_json()
+                && user_r_profile_is_configured()
+            {
+                use std::io::Write;
+                let mut stderr = std::io::stderr().lock();
+                writeln!(
+                    stderr,
+                    "warning: ignoring the project or user .Rprofile for reproducibility: R startup code can change library paths, environment variables, and other process state selected by rv; pass `--with-profile` to load it for this invocation"
+                )?;
+                stderr.flush()?;
+            }
+            let code = rv::run_with_sandbox_options(
                 &context.r_cmd.bin_path,
                 context.library_path(),
                 sandbox.as_ref(),
+                with_profile,
                 &args,
             )?;
             std::process::exit(code);

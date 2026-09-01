@@ -195,6 +195,51 @@ fn rv_run_ignores_host_startup_files_and_library_environment() {
     assert_eq!(observed["r_libs"], "", "{stdout}");
     assert_eq!(observed["environ_leak"], "", "{stdout}");
     assert_eq!(observed["profile_leak"], "", "{stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ignoring the project or user .Rprofile"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--with-profile"), "{stderr}");
+}
+
+#[test]
+fn rv_run_can_explicitly_load_user_profile() {
+    let (project, cache, config) = create_project(Some(true));
+    let profile = project.path().join("host.Rprofile");
+    fs::write(
+        &profile,
+        "Sys.setenv(RV_EXPLICIT_PROFILE = 'profile-loaded')\n",
+    )
+    .unwrap();
+
+    let mut command = rv_cmd(&cache, &config);
+    command
+        .current_dir(project.path())
+        .env("R_PROFILE_USER", &profile)
+        .args([
+            "run",
+            "--with-profile",
+            "--no-sync",
+            "-e",
+            r#"cat(
+                paste("library", .Library, sep = "\t"),
+                paste("profile", Sys.getenv("RV_EXPLICIT_PROFILE"), sep = "\t"),
+                sep = "\n"
+            )"#,
+        ]);
+
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let observed = probe_values(&stdout);
+    assert!(observed["library"].contains("sandboxes"), "{stdout}");
+    assert_eq!(observed["profile"], "profile-loaded", "{stdout}");
 }
 
 #[test]
