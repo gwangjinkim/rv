@@ -6,9 +6,8 @@ use sha2::{Digest, Sha256};
 
 use crate::Cache;
 use crate::consts::{BASE_PACKAGES, RECOMMENDED_PACKAGES};
-use crate::fs::copy_folder;
 use crate::package::{Package, parse_description_file};
-use crate::sync::create_symlink;
+use crate::sync::LinkMode;
 
 const SANDBOX_FORMAT_VERSION: &str = "2";
 const SANDBOX_PROFILE_FILENAME: &str = ".rv-profile.R";
@@ -134,22 +133,41 @@ impl SandboxPackages {
         result[..10].to_string()
     }
 
-    pub fn symlink_to(&self, path: &Path) -> Result<(), SandboxError> {
+    /// We start with symlinks but it can be an issue on Windows.
+    /// If that doesn't work, then we try hardlinks and copy as last fallback
+    pub fn materialize_to(&self, path: &Path) -> Result<(), SandboxError> {
         // Clear whatever is there first so we have a fresh sandbox
         if path.is_dir() {
             fs::remove_dir_all(path).map_err(SandboxError::file(path))?;
         }
         fs::create_dir_all(path).map_err(SandboxError::file(path))?;
 
+        let mut mode = LinkMode::Symlink;
         for (lib_path, pkg) in &self.packages {
-            let link = path.join(&pkg.name);
-            if let Err(error) = create_symlink(lib_path, &link) {
+            let dest = path.join(&pkg.name);
+
+            while let Err(error) = mode.link_package_dir(lib_path, &dest) {
+                // A failed attempt can leave a partial result behind
+                if let Ok(meta) = fs::symlink_metadata(&dest)
+                    && meta.is_dir()
+                {
+                    fs::remove_dir_all(&dest).map_err(SandboxError::file(&dest))?;
+                }
+
+                let fallback = match mode {
+                    LinkMode::Symlink => LinkMode::Hardlink,
+                    LinkMode::Hardlink => LinkMode::Copy,
+                    _ => {
+                        return Err(SandboxError::file(dest)(std::io::Error::other(error)));
+                    }
+                };
                 log::warn!(
-                    "Failed to symlink {} into the sandbox: {error}. Falling back to copying files.",
-                    pkg.name
+                    "Could not {} {} into the sandbox: {error}. Falling back to {}.",
+                    mode.name(),
+                    pkg.name,
+                    fallback.name()
                 );
-                fs::create_dir_all(&link).map_err(SandboxError::file(&link))?;
-                copy_folder(lib_path, &link).map_err(SandboxError::file(&link))?;
+                mode = fallback;
             }
         }
 
@@ -218,7 +236,7 @@ pub fn ensure_sandbox_exists(library: &Path, cache: &Cache) -> Result<Sandbox, S
 
     fs::create_dir_all(&local).map_err(SandboxError::file(&local))?;
     let tmp = tempfile::tempdir_in(&local).map_err(SandboxError::file(&local))?;
-    content.symlink_to(tmp.path())?;
+    content.materialize_to(tmp.path())?;
 
     for name in BASE_PACKAGES {
         if !tmp.path().join(name).join("DESCRIPTION").is_file() {
@@ -267,7 +285,7 @@ mod tests {
 
         let packages = get_packages_to_copy(library.path()).unwrap();
         let output = tempfile::tempdir().unwrap();
-        packages.symlink_to(output.path()).unwrap();
+        packages.materialize_to(output.path()).unwrap();
 
         assert!(output.path().join("base").join("DESCRIPTION").is_file());
         assert!(output.path().join("MASS").join("DESCRIPTION").is_file());
