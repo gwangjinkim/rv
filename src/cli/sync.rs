@@ -66,9 +66,10 @@ impl SyncHelper {
             ));
         }
 
-        // Build and use the sandbox if needed
+        // Build and attach the sandbox to every R subprocess used by sync.
+        let mut sync_r_cmd = context.r_cmd.clone();
         if !self.dry_run && context.config.sandbox_enabled() {
-            let path = context
+            let sandbox = context
                 .r_cmd
                 .get_r_library()
                 .map_err(|e| {
@@ -79,7 +80,8 @@ impl SyncHelper {
                         anyhow::anyhow!("sandbox is enabled but could not be created: {e}")
                     })
                 })?;
-            log::debug!("sandbox ready at {}", path.display());
+            log::debug!("sandbox ready at {}", sandbox.path().display());
+            sync_r_cmd = sync_r_cmd.with_sandbox(sandbox);
         }
 
         let sync_start = std::time::Instant::now();
@@ -123,7 +125,7 @@ impl SyncHelper {
                     handler.show_progress_bar();
                 }
                 handler.set_uses_lockfile(context.config.use_lockfile());
-                handler.handle(&resolution.found, &context.r_cmd)
+                handler.handle(&resolution.found, &sync_r_cmd)
             }
         ) {
             Ok(mut changes) => {

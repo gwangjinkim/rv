@@ -132,6 +132,7 @@ mod tests {
             bin_path: PathBuf::from("/opt/R/bin/R"),
             version: v(version),
             is_devel: false,
+            sandbox: None,
         }
     }
 

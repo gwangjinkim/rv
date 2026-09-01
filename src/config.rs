@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::SystemInfo;
-use crate::consts::{LOCKFILE_NAME, USE_SANDBOX_ENV_VAR_NAME};
+use crate::consts::{LOCKFILE_NAME, SANDBOX_ENABLE_ENV_VAR_NAME};
 use crate::dependency_edit::DEFAULT_GIT_SHORTHAND_BASE_URL;
 use crate::git::url::GitUrl;
 use crate::lockfile::Source;
@@ -373,6 +373,10 @@ fn default_true() -> bool {
     true
 }
 
+fn sandbox_enabled_from(config: Option<bool>, environment: bool) -> bool {
+    config.unwrap_or(environment)
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -524,9 +528,10 @@ impl Config {
     }
 
     pub fn sandbox_enabled(&self) -> bool {
-        self.project
-            .sandbox
-            .unwrap_or_else(|| is_env_var_truthy(USE_SANDBOX_ENV_VAR_NAME))
+        sandbox_enabled_from(
+            self.project.sandbox,
+            is_env_var_truthy(SANDBOX_ENABLE_ENV_VAR_NAME),
+        )
     }
 
     pub fn use_lockfile(&self) -> bool {
@@ -613,6 +618,14 @@ pub enum ConfigLoadErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_config_takes_precedence_over_the_environment() {
+        assert!(sandbox_enabled_from(Some(true), false));
+        assert!(!sandbox_enabled_from(Some(false), true));
+        assert!(sandbox_enabled_from(None, true));
+        assert!(!sandbox_enabled_from(None, false));
+    }
 
     #[test]
     fn can_parse_valid_config_files() {

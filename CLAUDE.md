@@ -63,6 +63,7 @@ All environment variable names are defined in `src/consts.rs`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RV_LIBRARY_DIR` | unset | Override the project library directory. Supports absolute and relative paths (resolved against project dir). Takes precedence over the `library` field in `rproject.toml` |
+| `RV_SANDBOX_ENABLE` | false | Opt into a base/recommended-only system library sandbox when `project.sandbox` is unset |
 
 ### Performance Tuning
 

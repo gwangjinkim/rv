@@ -45,6 +45,24 @@ Running `rv sync` will synchronize the library, lock file, and configuration fil
 
 Additional example projects with more configurations can be found in the [example_projects](example_projects)  directory of this repository.
 
+## System library sandboxing
+
+R always appends its system library (`.Library`) to `.libPaths()`. If that
+library contains user-installed packages, they can leak into an otherwise
+reproducible rv project. Sandboxing is opt-in and exposes only R's base and
+recommended packages from the system library:
+
+```toml
+[project]
+sandbox = true
+```
+
+The configuration value takes precedence over the `RV_SANDBOX_ENABLE`
+environment variable. When enabled, the same sandbox is used by interactive R
+activation, `rv run`, and the R subprocesses used to build and install packages.
+Sandboxes are cached by R installation, platform, and package versions so they
+can be safely reused across projects.
+
 ## Installation
 
 See the [documentation site](https://a2-ai.github.io/rv-docs/) for installation instructions.

@@ -65,7 +65,7 @@ pub trait RCmd: Send + Sync {
 
 /// Canonicalize library paths and join them into R's expected format
 /// (colon-separated on Unix, semicolon-separated on Windows).
-fn r_library_paths(libraries: &[impl AsRef<Path>]) -> Result<String, std::io::Error> {
+pub(crate) fn r_library_paths(libraries: &[impl AsRef<Path>]) -> Result<String, std::io::Error> {
     let canonicalized = libraries
         .iter()
         .map(|lib| lib.as_ref().canonicalize())
@@ -81,6 +81,30 @@ fn r_library_paths(libraries: &[impl AsRef<Path>]) -> Result<String, std::io::Er
         })
         .collect::<Vec<_>>()
         .join(sep))
+}
+
+impl RInstall {
+    fn library_paths_with_sandbox(
+        &self,
+        libraries: &[impl AsRef<Path>],
+    ) -> Result<String, std::io::Error> {
+        let mut paths = libraries
+            .iter()
+            .map(|library| library.as_ref())
+            .collect::<Vec<_>>();
+        if let Some(sandbox) = &self.sandbox
+            && !paths.iter().any(|path| *path == sandbox.path())
+        {
+            paths.push(sandbox.path());
+        }
+        r_library_paths(&paths)
+    }
+
+    fn configure_sandbox_startup(&self, command: &mut Command) {
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.configure_r_startup(command);
+        }
+    }
 }
 
 /// By default, doing ctrl+c on rv will kill it as well as all its child process.
@@ -263,8 +287,9 @@ impl RCmd for RInstall {
             source: RCmdErrorKind::LinkError(e),
         })?;
 
-        let library_paths =
-            r_library_paths(libraries).map_err(|e| RCmdError::from_fs_io(e, destination))?;
+        let library_paths = self
+            .library_paths_with_sandbox(libraries)
+            .map_err(|e| RCmdError::from_fs_io(e, destination))?;
 
         // Some R package structures, especially those that make use of
         // bootstrap.R like tree-sitter-r require the parent directories
@@ -317,15 +342,23 @@ impl RCmd for RInstall {
                     // paths so any `library()` calls resolve against project deps, and the
                     // package env vars. run_r_command handles pid tracking + cancellation.
                     let mut command = spawn_isolated_r_command(self);
+                    if self.sandbox.is_some() {
+                        command
+                            .arg("--no-restore")
+                            .arg("--no-save")
+                            .arg("--no-init-file");
+                    } else {
+                        command.arg("--vanilla");
+                    }
                     command
-                        .arg("--vanilla")
                         .arg("-f")
                         .arg("bootstrap.R")
                         .current_dir(&src_backup_dir)
+                        .envs(env_vars)
                         .env("R_LIBS", &library_paths)
                         .env("R_LIBS_SITE", &library_paths)
-                        .env("R_LIBS_USER", &library_paths)
-                        .envs(env_vars);
+                        .env("R_LIBS_USER", &library_paths);
+                    self.configure_sandbox_startup(&mut command);
 
                     // Match pkgbuild: a failed bootstrap is a hard build failure rather
                     // than something we silently proceed past.
@@ -348,8 +381,14 @@ impl RCmd for RInstall {
             .arg(format!(
                 "--library={}",
                 build_dir.as_ref().to_string_lossy()
-            ))
-            .arg("--use-vanilla");
+            ));
+        if self.sandbox.is_some() {
+            // R CMD INSTALL only loads the controlled sandbox profile when it
+            // is not launched in vanilla mode.
+            command.arg("--no-vanilla");
+        } else {
+            command.arg("--use-vanilla");
+        }
 
         if strip {
             command.arg("--strip").arg("--strip-lib");
@@ -370,15 +409,16 @@ impl RCmd for RInstall {
         command
             .arg(&src_backup_dir)
             // Override where R should look for deps
+            .envs(env_vars)
             .env("R_LIBS", &library_paths)
             .env("R_LIBS_SITE", &library_paths)
             .env("R_LIBS_USER", &library_paths);
+        self.configure_sandbox_startup(&mut command);
 
         if strip {
             command.env("_R_SHLIB_STRIP_", "true");
         }
 
-        command.envs(env_vars);
         log::debug!(
             "Compiling {} with env vars: {}",
             source_folder.as_ref().display(),
@@ -430,8 +470,9 @@ impl RCmd for RInstall {
         let output_dir = output_dir.as_ref();
         let source_dir = source_dir.as_ref();
 
-        let library_paths =
-            r_library_paths(libraries).map_err(|e| RCmdError::from_fs_io(e, source_dir))?;
+        let library_paths = self
+            .library_paths_with_sandbox(libraries)
+            .map_err(|e| RCmdError::from_fs_io(e, source_dir))?;
 
         let mut command = spawn_isolated_r_command(self);
         command
@@ -441,10 +482,11 @@ impl RCmd for RInstall {
             .arg("--no-manual")
             .arg(source_dir)
             .current_dir(output_dir)
+            .envs(env_vars)
             .env("R_LIBS", &library_paths)
             .env("R_LIBS_SITE", &library_paths)
-            .env("R_LIBS_USER", &library_paths)
-            .envs(env_vars);
+            .env("R_LIBS_USER", &library_paths);
+        self.configure_sandbox_startup(&mut command);
 
         log::debug!("Running R CMD build on {}", source_dir.display());
 
@@ -630,9 +672,59 @@ pub(crate) fn resolve_rscript_path(r_home: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_r_version, resolve_rscript_path};
-    use crate::Version;
+    use super::{RInstall, find_r_version, resolve_rscript_path};
+    use crate::{Sandbox, Version};
+    use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::process::Command;
+
+    #[test]
+    fn sandbox_is_added_to_r_subprocess_library_paths_and_startup() {
+        let project_library = tempfile::tempdir().unwrap();
+        let sandbox_library = tempfile::tempdir().unwrap();
+        let sandbox = Sandbox::for_test(sandbox_library.path().to_path_buf());
+        let install = RInstall {
+            bin_path: PathBuf::from("R"),
+            version: "4.5".parse().unwrap(),
+            is_devel: false,
+            sandbox: Some(sandbox),
+        };
+
+        let paths = install
+            .library_paths_with_sandbox(&[project_library.path()])
+            .unwrap();
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        let split = paths.split(separator).collect::<Vec<_>>();
+        assert_eq!(split.len(), 2);
+        assert_eq!(
+            PathBuf::from(split[0]),
+            project_library.path().canonicalize().unwrap()
+        );
+        assert_eq!(
+            PathBuf::from(split[1]),
+            sandbox_library.path().canonicalize().unwrap()
+        );
+
+        let mut command = Command::new("R");
+        install.configure_sandbox_startup(&mut command);
+        let environment = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().to_string(),
+                        value.to_string_lossy().to_string(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            environment["RV_SANDBOX_LIBRARY"],
+            sandbox_library.path().to_string_lossy()
+        );
+        assert!(environment["R_PROFILE"].ends_with(".rv-profile.R"));
+        assert!(environment["R_ENVIRON"].ends_with(".rv-empty-startup"));
+    }
 
     #[test]
     fn resolve_rscript_from_r_home() {

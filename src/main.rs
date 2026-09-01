@@ -1190,8 +1190,8 @@ fn try_main() -> Result<()> {
                             ensure_sandbox_exists(&lib, &context.cache).map_err(|e| anyhow!("{e}"))
                         });
                     match res {
-                        Ok(path) => {
-                            let path_str = path.to_string_lossy();
+                        Ok(sandbox) => {
+                            let path_str = sandbox.path().to_string_lossy();
                             sandbox_out = if cfg!(windows) {
                                 path_str.replace('\\', "/")
                             } else {
@@ -1337,7 +1337,21 @@ fn try_main() -> Result<()> {
                 .run(&context, resolve_mode)?;
             }
 
-            let code = rv::run(&context.r_cmd.bin_path, context.library_path(), &args)?;
+            let sandbox = if context.config.sandbox_enabled() {
+                let library = context.r_cmd.get_r_library().map_err(|e| anyhow!("{e}"))?;
+                Some(
+                    ensure_sandbox_exists(&library, &context.cache)
+                        .map_err(|e| anyhow!("sandbox is enabled but could not be created: {e}"))?,
+                )
+            } else {
+                None
+            };
+            let code = rv::run_with_sandbox(
+                &context.r_cmd.bin_path,
+                context.library_path(),
+                sandbox.as_ref(),
+                &args,
+            )?;
             std::process::exit(code);
         }
 

@@ -18,8 +18,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::Version;
 use crate::r_cmd::RCmd;
+use crate::{Sandbox, Version};
 
 static R_MAJOR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"#define R_MAJOR\s+"(\d+)""#).unwrap());
@@ -33,6 +33,7 @@ pub struct RInstall {
     pub bin_path: PathBuf,
     pub version: Version,
     pub is_devel: bool,
+    pub(crate) sandbox: Option<Sandbox>,
 }
 
 impl RInstall {
@@ -51,7 +52,13 @@ impl RInstall {
             bin_path,
             version: Version::default(),
             is_devel: false,
+            sandbox: None,
         }
+    }
+
+    pub fn with_sandbox(mut self, sandbox: Sandbox) -> Self {
+        self.sandbox = Some(sandbox);
+        self
     }
 
     pub fn find_version(mut self) -> Option<Self> {
@@ -80,6 +87,7 @@ impl RInstall {
             bin_path: path.to_path_buf(),
             version: Version::default(),
             is_devel: false,
+            sandbox: None,
         };
         r_cmd.find_version()
     }
@@ -128,6 +136,7 @@ pub fn get_r_from_path() -> Option<RInstall> {
         bin_path,
         is_devel: false,
         version: Version::default(),
+        sandbox: None,
     };
 
     r_cmd.find_version()
@@ -161,6 +170,7 @@ fn scan_known_r_locations() -> Vec<RInstall> {
                             bin_path,
                             version,
                             is_devel,
+                            sandbox: None,
                         });
                     }
                 }
@@ -188,6 +198,7 @@ fn scan_known_r_locations() -> Vec<RInstall> {
                             bin_path,
                             version,
                             is_devel,
+                            sandbox: None,
                         });
                     }
                 }
@@ -218,6 +229,7 @@ fn scan_known_r_locations() -> Vec<RInstall> {
                             bin_path,
                             version,
                             is_devel,
+                            sandbox: None,
                         });
                     }
                 }
@@ -244,6 +256,7 @@ fn scan_known_r_locations() -> Vec<RInstall> {
                             bin_path,
                             version,
                             is_devel,
+                            sandbox: None,
                         });
                     }
                 }
